@@ -9,6 +9,10 @@ import { DEFAULT_HOST_PORT, DEFAULT_SERVER_PERMISSIONS } from '../../../shared/t
 import { checkForUpdate, clearPackageCache } from '../../managers/PackageVersionChecker';
 import { readLocalPackageJson, fetchNpmPackageMetadata } from '../../managers/PackageMetadataReader';
 import { getPackageInstaller } from '../../managers/PackageInstaller';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
 
 export function createServerRoutes(router: Router, ctx: RouteContext): void {
   // List all servers
@@ -794,6 +798,307 @@ export function createServerRoutes(router: Router, ctx: RouteContext): void {
         message: 'Workspace permission override removed',
       });
     } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  });
+
+  // Clone git repository to local app directory with proxy support
+  router.post('/api/packages/clone', async (req: Request, res: Response) => {
+    try {
+      const body = req.body as {
+        gitUrl: string;
+        proxyConfig?: {
+          enabled: boolean;
+          type: 'http' | 'https' | 'socks4' | 'socks5';
+          host: string;
+          port: number;
+          username?: string;
+          password?: string;
+          bypassHosts?: string[];
+        };
+      };
+      const { gitUrl, proxyConfig } = body;
+
+      if (!gitUrl) {
+        res.status(400).json({
+          success: false,
+          error: 'gitUrl is required',
+        });
+        return;
+      }
+
+      // Validate git URL format
+      const gitUrlPattern = /^https?:\/\/.+\.git$|^git@.+:.+\.git$/;
+      if (!gitUrlPattern.test(gitUrl)) {
+        res.status(400).json({
+          success: false,
+          error: 'Invalid git URL format. Expected HTTPS or SSH URL ending with .git',
+        });
+        return;
+      }
+
+      // Create proxy environment if configured
+      let proxyEnv = {};
+      if (proxyConfig && proxyConfig.enabled) {
+        const { createProxyEnvironment } = require('../../../shared/ProxyConfig');
+        proxyEnv = createProxyEnvironment(proxyConfig);
+        console.log('[git-clone] Using proxy configuration:', {
+          type: proxyConfig.type,
+          host: proxyConfig.host,
+          port: proxyConfig.port,
+          hasAuth: !!(proxyConfig.username && proxyConfig.password)
+        });
+      }
+
+      // Enhanced git detection for Electron environment
+      console.log('[git-clone] Starting enhanced git detection for Electron...');
+      console.log('[git-clone] Current PATH:', process.env.PATH);
+      
+      // Try to find git using multiple methods
+      let gitPath: string | null = null;
+      
+      // Method 1: Use BinaryDetector
+      try {
+        const { getCachedBinaryPaths } = require('../../../shared/BinaryDetector');
+        const binaryPaths = await getCachedBinaryPaths();
+        if (binaryPaths.git) {
+          gitPath = binaryPaths.git;
+          console.log('[git-clone] Found git via BinaryDetector:', gitPath);
+        }
+      } catch (error) {
+        console.log('[git-clone] BinaryDetector failed, trying other methods');
+      }
+      
+      // Method 2: Try common paths directly with validation
+      if (!gitPath) {
+        const commonPaths = [
+          '/usr/bin/git',
+          '/usr/local/bin/git',
+          '/opt/homebrew/bin/git',
+          '/opt/local/bin/git',
+          '/usr/local/git/bin/git',
+          '/Applications/Xcode.app/Contents/Developer/usr/bin/git',
+        ];
+        
+        for (const path of commonPaths) {
+          try {
+            // Test if file exists and is executable
+            await execAsync(`test -f "${path}" && test -x "${path}"`, { 
+              timeout: 1000,
+              env: { ...process.env, ...proxyEnv }
+            });
+            
+            // Verify it's actually git by checking version
+            const { stdout: versionCheck } = await execAsync(`"${path}" --version`, {
+              timeout: 5000,
+              env: { ...process.env, ...proxyEnv }
+            });
+            
+            if (versionCheck.includes('git version')) {
+              gitPath = path;
+              console.log('[git-clone] Found valid git at common path:', gitPath);
+              break;
+            }
+          } catch (error) {
+            continue;
+          }
+        }
+      }
+      
+      // Method 3: Try git command in PATH as last resort
+      if (!gitPath) {
+        try {
+          const { stdout: versionResult } = await execAsync('git --version', {
+            timeout: 5000,
+            env: { ...process.env, ...proxyEnv }
+          });
+          if (versionResult.includes('git version')) {
+            gitPath = 'git'; // Use system git
+            console.log('[git-clone] Git available via PATH');
+          }
+        } catch (error) {
+          console.log('[git-clone] git --version failed');
+        }
+      }
+      
+      if (!gitPath) {
+        res.status(500).json({
+          success: false,
+          error: 'git command not found. Please install git:\n' +
+                 '  • macOS: xcode-select --install or brew install git\n' +
+                 '  • Ubuntu/Debian: sudo apt-get install git\n' +
+                 '  • Windows: Download from https://git-scm.com/\n' +
+                 '  • Or: https://git-scm.com/downloads',
+        });
+        return;
+      }
+
+      console.log('[git-clone] Using git path:', gitPath);
+      try {
+        const { stdout: gitVersion } = await execAsync(`"${gitPath}" --version`, {
+          timeout: 10000,
+          env: { ...process.env, ...proxyEnv }
+        });
+        console.log('[git-clone] Git version check passed:', gitVersion.trim());
+      } catch (error) {
+        console.log('[git-clone] Git version check failed:', error);
+        res.status(500).json({
+          success: false,
+          error: `Git found but version check failed: ${error instanceof Error ? error.message : String(error)}`,
+        });
+        return;
+      }
+
+      // Create temporary directory for cloning
+      const fs = await import('fs/promises');
+      const path = await import('path');
+      
+      const tempDir = require('os').tmpdir();
+      await fs.mkdir(tempDir, { recursive: true });
+      
+      const timestamp = Date.now();
+      const cloneDir = path.join(tempDir, `repo-${timestamp}-${Math.random().toString(36).substring(7)}`);
+      
+      console.log('[git-clone] Cloning to:', cloneDir);
+      
+      const startTime = Date.now();
+      
+      try {
+        // Set up environment with proxy variables
+        const cloneEnv: { [key: string]: string | undefined } = { ...process.env, ...proxyEnv };
+        
+        // Add git-specific proxy configuration
+        if (proxyConfig && proxyConfig.enabled) {
+          if (proxyConfig.type === 'http' || proxyConfig.type === 'https') {
+            const proxyUrl = proxyConfig.username && proxyConfig.password 
+              ? `${proxyConfig.type}://${proxyConfig.username}:${proxyConfig.password}@${proxyConfig.host}:${proxyConfig.port}`
+              : `${proxyConfig.type}://${proxyConfig.host}:${proxyConfig.port}`;
+            
+            cloneEnv.GIT_HTTP_PROXY = proxyUrl;
+            cloneEnv.GIT_HTTPS_PROXY = proxyUrl;
+          } else if (proxyConfig.type === 'socks4' || proxyConfig.type === 'socks5') {
+            const proxyUrl = proxyConfig.username && proxyConfig.password 
+              ? `socks${proxyConfig.type === 'socks5' ? '5' : '4'}://${proxyConfig.username}:${proxyConfig.password}@${proxyConfig.host}:${proxyConfig.port}`
+              : `socks${proxyConfig.type === 'socks5' ? '5' : '4'}://${proxyConfig.host}:${proxyConfig.port}`;
+            
+            cloneEnv.GIT_HTTP_PROXY = proxyUrl;
+            cloneEnv.GIT_HTTPS_PROXY = proxyUrl;
+          }
+        }
+        
+        const gitCommand = `${gitPath} clone "${gitUrl}" "${cloneDir}"`;
+        
+        console.log('[git-clone] Executing:', gitCommand);
+        console.log('[git-clone] Proxy environment:', Object.keys(cloneEnv).filter(k => k.includes('PROXY')).map(k => `${k}=${cloneEnv[k]}`));
+        
+        const { stdout, stderr } = await execAsync(gitCommand, {
+          timeout: 300000, // 5 minutes timeout for large repos
+          env: cloneEnv
+        });
+        
+        const endTime = Date.now();
+        const duration = (endTime - startTime) / 1000;
+        
+        console.log('[git-clone] Clone stdout:', stdout);
+        console.log('[git-clone] Clone stderr:', stderr);
+        console.log(`[git-clone] Clone completed in ${duration}s`);
+        
+        // Verify the cloned directory exists and has .git folder
+        await fs.access(cloneDir);
+        await fs.access(path.join(cloneDir, '.git'));
+        
+        // Try to detect package.json for version and entry point
+        let version = 'unknown';
+        let entryPoint = '';
+        
+        try {
+          const packageJsonPath = path.join(cloneDir, 'package.json');
+          const packageJson = JSON.parse(await fs.readFile(packageJsonPath, 'utf-8'));
+          version = packageJson.version || 'unknown';
+          entryPoint = packageJson.main || '';
+        } catch (error) {
+          console.log('[git-clone] Could not read package.json:', error instanceof Error ? error.message : String(error));
+        }
+        
+        // Get repository size
+        let repoSize = 0;
+        try {
+          const { stdout: duOutput } = await execAsync(`du -sk "${cloneDir}"`, {
+            timeout: 10000,
+            env: cloneEnv
+          });
+          repoSize = parseInt(duOutput.split('\t')[0], 10) * 1024; // Convert KB to bytes
+        } catch (error) {
+          console.log('[git-clone] Could not get repository size:', error instanceof Error ? error.message : String(error));
+        }
+        
+        res.json({
+          success: true,
+          localPath: cloneDir,
+          version,
+          entryPoint,
+          repoSize,
+          cloneTime: duration,
+          proxyUsed: !!(proxyConfig && proxyConfig.enabled)
+        });
+        
+      } catch (error) {
+        const endTime = Date.now();
+        const duration = (endTime - startTime) / 1000;
+        
+        console.log('[git-clone] Clone failed after', duration, 'seconds:', error);
+        
+        // Cleanup on failure
+        try {
+          await fs.rm(cloneDir, { recursive: true, force: true });
+          console.log('[git-clone] Cleaned up failed clone directory');
+        } catch (cleanupError) {
+          console.log('[git-clone] Failed to cleanup:', cleanupError instanceof Error ? cleanupError.message : String(cleanupError));
+        }
+        
+        if (error instanceof Error) {
+          if (error.message.includes('not found') || error.message.includes('command not found')) {
+            res.status(500).json({
+              success: false,
+              error: 'git command not found. Please install git:\n' +
+                     '  • macOS: xcode-select --install or brew install git\n' +
+                     '  • Ubuntu/Debian: sudo apt-get install git\n' +
+                     '  • Windows: Download from https://git-scm.com/\n' +
+                     '  • Or: https://git-scm.com/downloads',
+            });
+          } else if (error.message.includes('Repository not found') || error.message.includes('not found')) {
+            res.status(404).json({
+              success: false,
+              error: 'Repository not found. Please check the git URL and ensure you have access to it.',
+            });
+          } else if (error.message.includes('Permission denied') || error.message.includes('authentication failed')) {
+            res.status(403).json({
+              success: false,
+              error: 'Permission denied. Please check your git credentials or SSH keys.',
+            });
+          } else if (error.message.includes('proxy') || error.message.includes('Proxy')) {
+            res.status(500).json({
+              success: false,
+              error: `Proxy connection failed: ${error.message}. Please check your proxy configuration.`,
+            });
+          } else {
+            res.status(500).json({
+              success: false,
+              error: `Git clone failed: ${error.message}`,
+            });
+          }
+        } else {
+          res.status(500).json({
+            success: false,
+            error: `Git clone failed: ${String(error)}`,
+          });
+        }
+      }
+    } catch (error) {
+      console.error('[git-clone] Clone request failed:', error);
       res.status(500).json({
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error',
