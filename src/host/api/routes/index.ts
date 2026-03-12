@@ -19,7 +19,10 @@ import { createSessionRoutes } from './sessions';
 import { createInstanceRoutes } from './instances';
 import { createSecretRoutes } from './secrets';
 import { createMcpToolsRoutes } from './mcp-tools';
+import { createIDERoutes } from './ide';
 import { createAIRoutes } from './ai';
+import { createSystemRoutes } from './system';
+import { createProxyRoutes } from './proxy';
 import type { AIAgent } from '../../ai/AIAgent';
 
 export interface RouteContext {
@@ -54,5 +57,8 @@ export function setupRoutes(router: Router, ctx: RouteContext): void {
   createInstanceRoutes(router, ctx);
   createSecretRoutes(router, ctx);
   createMcpToolsRoutes(router, { mcpToolsStore: ctx.mcpToolsStore, eventBus: ctx.eventBus });
+  createIDERoutes(router, ctx);
   createAIRoutes(router, { aiAgent: ctx.aiAgent, secretStore: ctx.secretStore });
+  createSystemRoutes(router, ctx);
+  createProxyRoutes(router);
 }
