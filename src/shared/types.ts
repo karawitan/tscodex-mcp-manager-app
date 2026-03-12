@@ -7,12 +7,14 @@
 // ============================================================================
 
 /**
- * Package runner type for MCP servers
- * - 'npm': Installed via npm to local app directory (recommended, fast startup)
+ * Server installation method
+ * - 'npm', 'pnpm', 'yarn', 'bun': Install and run as dependency
  * - 'npx', 'pnpx', 'yarn', 'bunx': Run via package runner (slower, checks registry)
+ * - 'uvx': Run Python packages via uvx (uv tool runner)
  * - 'local': Local development path
+ * - 'git': Clone from git repository
  */
-export type InstallType = 'npm' | 'npx' | 'pnpx' | 'yarn' | 'bunx' | 'local';
+export type InstallType = 'npm' | 'npx' | 'pnpx' | 'yarn' | 'bunx' | 'uvx' | 'local' | 'git';
 
 /**
  * Package manager info
@@ -101,6 +103,7 @@ export interface ServerTemplate {
   installType: InstallType;
   packageName?: string;
   localPath?: string;
+  gitUrl?: string;
   packageVersion?: string;
 
   displayName: string;
@@ -340,6 +343,7 @@ export interface CreateServerRequest {
   packageName?: string;
   packageVersion?: string;
   localPath?: string;
+  gitUrl?: string;
 }
 
 export interface CreateWorkspaceRequest {
@@ -369,6 +373,12 @@ export interface ServerEvent {
     error?: string;
     message?: string;
     level?: 'info' | 'warn' | 'error' | 'debug';
+    // Enhanced error context for startup failures
+    exitCode?: number;
+    signal?: string;
+    originalError?: string;
+    startupLogs?: string[];
+    startupErrorLogs?: string[];
   };
 }
 

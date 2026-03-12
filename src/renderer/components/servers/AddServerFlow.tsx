@@ -11,6 +11,8 @@ import {
   Wrench,
   MessageSquare,
   FileText,
+  GitBranch,
+  Cpu,
 } from 'lucide-react';
 import type { InstallType } from '../../../shared/types';
 import { getApiBase } from '../../lib/api';
@@ -42,6 +44,7 @@ export function AddServerFlow({ onClose, onServerAdded }: AddServerFlowProps) {
   const [packageName, setPackageName] = useState('');
   const [packageVersion, setPackageVersion] = useState('');
   const [localPath, setLocalPath] = useState('');
+  const [gitUrl, setGitUrl] = useState('');
 
   // Verification state
   const [isVerifying, setIsVerifying] = useState(false);
@@ -52,20 +55,32 @@ export function AddServerFlow({ onClose, onServerAdded }: AddServerFlowProps) {
     {
       type: 'npm',
       label: 'NPM Package',
-      description: 'Install via npm (recommended, fast startup)',
+      description: 'Install from npm registry',
       icon: <Package className="w-5 h-5" />,
       recommended: true,
     },
     {
+      type: 'git',
+      label: 'Git Repository',
+      description: 'Clone from git repository',
+      icon: <GitBranch className="w-5 h-5" />,
+    },
+    {
       type: 'local',
-      label: 'Local Path',
-      description: 'Use a local MCP server script',
+      label: 'Local Folder',
+      description: 'Use local MCP server folder',
       icon: <FolderOpen className="w-5 h-5" />,
     },
     {
-      type: 'npx',
-      label: 'NPX Package',
-      description: 'Run via npx (slower startup)',
+      type: 'uvx',
+      label: 'UVX Package',
+      description: 'Install from uvx (Python)',
+      icon: <Cpu className="w-5 h-5" />,
+    },
+    {
+      type: 'bunx',
+      label: 'BunX Package',
+      description: 'Install from bunx (Bun)',
       icon: <Package className="w-5 h-5" />,
     },
     {
@@ -131,8 +146,9 @@ export function AddServerFlow({ onClose, onServerAdded }: AddServerFlowProps) {
 
       let resolvedPackageVersion = packageVersion;
       let entryPoint: string | undefined;
+      let gitLocalPath = ''; // Store git clone localPath separately
 
-      // Step 0: For npm install type, install the package first
+      // Step 0: Handle different installation types
       if (installType === 'npm') {
         addLog(`Installing ${packageName}...`);
 
@@ -155,6 +171,93 @@ export function AddServerFlow({ onClose, onServerAdded }: AddServerFlowProps) {
         entryPoint = installData.entryPoint;
         addLog(`Installed ${packageName}@${resolvedPackageVersion}`);
         addLog(`Entry point: ${entryPoint}`);
+      } else if (installType === 'git') {
+        addLog(`Checking git availability...`);
+        
+        // Check git availability first
+        try {
+          const gitCheckResponse = await fetch(`${getApiBase()}/packages/check-git`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+          });
+          
+          const gitData = await gitCheckResponse.json();
+          
+          if (!gitData.success) {
+            throw new Error(gitData.error || 'git not available');
+          }
+          
+          addLog(`git is available: ${gitData.version}`);
+          addLog(`git path: ${gitData.path}`);
+        } catch (error) {
+          throw new Error(`Git check failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        
+        addLog(`Cloning repository from ${gitUrl}...`);
+
+        const cloneResponse = await fetch(`${getApiBase()}/packages/clone`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            gitUrl,
+          }),
+        });
+
+        const cloneData = await cloneResponse.json();
+
+        if (!cloneData.success) {
+          throw new Error(cloneData.error || 'Git clone failed');
+        }
+
+        resolvedPackageVersion = cloneData.version;
+        entryPoint = cloneData.entryPoint;
+        gitLocalPath = cloneData.localPath; // Store in variable
+        setLocalPath(cloneData.localPath);
+        addLog(`Cloned repository to ${cloneData.localPath}`);
+        addLog(`Detected version: ${resolvedPackageVersion}`);
+        addLog(`Entry point: ${entryPoint}`);
+      } else if (installType === 'uvx') {
+        addLog(`Checking Python package ${packageName}...`);
+        
+        // For uvx, we don't need to install anything, just verify the package exists
+        // We'll use a simple uvx --help command to check if uvx is available
+        try {
+          const uvxCheckResponse = await fetch(`${getApiBase()}/packages/check-uvx`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+          });
+          
+          const uvxData = await uvxCheckResponse.json();
+          
+          if (!uvxData.success) {
+            throw new Error(uvxData.error || 'uvx not available');
+          }
+          
+          addLog(`uvx is available: ${uvxData.version}`);
+          
+          // Try to get package info from PyPI
+          try {
+            const pypiResponse = await fetch(`https://pypi.org/pypi/${encodeURIComponent(packageName)}/json`);
+            if (pypiResponse.ok) {
+              const pypiData = await pypiResponse.json();
+              resolvedPackageVersion = pypiData.info.version || packageVersion || 'latest';
+              addLog(`Found package on PyPI: ${pypiData.info.name} v${resolvedPackageVersion}`);
+              if (pypiData.info.description) {
+                addLog(`Description: ${pypiData.info.description}`);
+              }
+            } else {
+              addLog(`Warning: Could not fetch package info from PyPI`);
+              resolvedPackageVersion = packageVersion || 'latest';
+            }
+          } catch (err) {
+            addLog(`Warning: Could not verify package on PyPI, proceeding anyway`);
+            resolvedPackageVersion = packageVersion || 'latest';
+          }
+        } catch (error) {
+          throw new Error(`uvx check failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
       } else if (installType !== 'local' && !packageVersion) {
         // For other types, get version from registry
         addLog(`Fetching latest version for ${packageName}...`);
@@ -183,10 +286,11 @@ export function AddServerFlow({ onClose, onServerAdded }: AddServerFlowProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           installType,
-          packageName: installType !== 'local' ? packageName : undefined,
+          packageName: installType !== 'local' && installType !== 'git' ? packageName : undefined,
+          gitUrl: installType === 'git' ? gitUrl : undefined,
           // Only send packageVersion if it's actually set (not empty string)
           packageVersion: installType !== 'local' && resolvedPackageVersion ? resolvedPackageVersion : undefined,
-          localPath: installType === 'local' ? localPath : undefined,
+          localPath: installType === 'local' ? localPath : installType === 'git' ? gitLocalPath : undefined,
           entryPoint: installType === 'npm' ? entryPoint : undefined,
         }),
       });
@@ -329,6 +433,8 @@ export function AddServerFlow({ onClose, onServerAdded }: AddServerFlowProps) {
 
   const canProceed = installType === 'local'
     ? localPath.trim().length > 0
+    : installType === 'git'
+    ? gitUrl.trim().length > 0
     : packageName.trim().length > 0;
 
   return (
@@ -406,6 +512,53 @@ export function AddServerFlow({ onClose, onServerAdded }: AddServerFlowProps) {
                   <p className="text-xs text-gray-500 mt-2">
                     Path to the MCP server folder (must contain package.json in root)
                   </p>
+                </div>
+              ) : installType === 'git' ? (
+                <div>
+                  <label className="block text-sm font-medium text-gray-400 mb-2">
+                    Git Repository URL
+                  </label>
+                  <input
+                    type="text"
+                    value={gitUrl}
+                    onChange={(e) => setGitUrl(e.target.value)}
+                    placeholder="https://github.com/user/mcp-server.git"
+                    className="input font-mono text-sm"
+                  />
+                  <p className="text-xs text-gray-500 mt-2">
+                    Git repository URL to clone (HTTPS or SSH)
+                  </p>
+                </div>
+              ) : installType === 'uvx' ? (
+                <div>
+                  <label className="block text-sm font-medium text-gray-400 mb-2">
+                    Python Package Name
+                  </label>
+                  <input
+                    type="text"
+                    value={packageName}
+                    onChange={(e) => setPackageName(e.target.value)}
+                    placeholder="mcp-server-tools"
+                    className="input font-mono text-sm"
+                  />
+                  <p className="text-xs text-gray-500 mt-2">
+                    Python package name from PyPI (e.g., mcp-server-tools)
+                  </p>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-2 mt-4">
+                      Version (optional)
+                    </label>
+                    <input
+                      type="text"
+                      value={packageVersion}
+                      onChange={(e) => setPackageVersion(e.target.value)}
+                      placeholder="latest"
+                      className="input font-mono text-sm"
+                    />
+                    <p className="text-xs text-gray-500 mt-2">
+                      Package version (defaults to latest)
+                    </p>
+                  </div>
                 </div>
               ) : (
                 <>
