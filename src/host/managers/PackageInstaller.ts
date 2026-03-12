@@ -8,6 +8,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs/promises';
 import path from 'path';
+import { getCachedBinaryPaths, getEnhancedEnv } from '../../shared/BinaryDetector';
 
 const execAsync = promisify(exec);
 
@@ -98,10 +99,12 @@ export class PackageInstaller {
         }, null, 2));
       }
 
-      // Run npm install
-      const { stdout, stderr } = await execAsync(`npm install ${pkgSpec} --save`, {
+      // Run npm install with full path and enhanced environment
+      const binaryPaths = await getCachedBinaryPaths();
+      const { stdout, stderr } = await execAsync(`${binaryPaths.npm} install ${pkgSpec} --save`, {
         cwd: pkgPath,
         timeout: 120000, // 2 minutes timeout
+        env: getEnhancedEnv(binaryPaths)
       });
 
       console.log(`[PackageInstaller] npm install stdout:`, stdout);

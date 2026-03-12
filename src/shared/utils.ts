@@ -3,11 +3,68 @@
  */
 
 import type { InstallType } from './types';
+import { getCachedBinaryPaths } from './BinaryDetector';
 
 /**
  * Get spawn command for a server based on install type
  */
-export function getSpawnCommand(
+export async function getSpawnCommand(
+  installType: InstallType,
+  packageName?: string,
+  packageVersion?: string,
+  localPath?: string,
+  entryPoint?: string
+): Promise<{ command: string; args: string[] }> {
+  const binaryPaths = await getCachedBinaryPaths();
+  
+  // For npm installed packages, use the entry point directly
+  if (installType === 'npm') {
+    if (!entryPoint) {
+      throw new Error(`[getSpawnCommand] entryPoint is required for npm install type`);
+    }
+    return { command: binaryPaths.node, args: [entryPoint] };
+  }
+
+  // For package runners (npx, pnpx, etc.)
+  // packageVersion should always be set during server creation
+  // fallback to 'latest' only for legacy servers without fixed version
+  if (!packageVersion && packageName) {
+    console.warn(`[getSpawnCommand] No packageVersion for ${packageName}, using 'latest' (this may slow down startup)`);
+  }
+  const version = packageVersion || 'latest';
+  
+  // For uvx, Python packages don't use @version syntax like npm
+  const pkg = installType === 'uvx' && packageName 
+    ? (packageVersion && packageVersion !== 'latest' ? `${packageName}==${packageVersion}` : packageName)
+    : (packageName ? `${packageName}@${version}` : '');
+
+  switch (installType) {
+    case 'npx':
+      return { command: binaryPaths.npx, args: [pkg] };
+    case 'pnpx':
+      return { command: binaryPaths.pnpm, args: ['dlx', pkg] };
+    case 'yarn':
+      return { command: binaryPaths.yarn, args: ['dlx', pkg] };
+    case 'bunx':
+      return { command: binaryPaths.bunx, args: [pkg] };
+    case 'uvx':
+      return { command: binaryPaths.uvx, args: [pkg] };
+    case 'git':
+      if (!localPath) {
+        throw new Error(`[getSpawnCommand] localPath is required for git install type`);
+      }
+      return { command: binaryPaths.node, args: [localPath] };
+    case 'local':
+      return { command: binaryPaths.node, args: [localPath!] };
+    default:
+      throw new Error(`Unknown install type: ${installType}`);
+  }
+}
+
+/**
+ * Get spawn command for a server based on install type (synchronous version)
+ */
+export function getSpawnCommandSync(
   installType: InstallType,
   packageName?: string,
   packageVersion?: string,
