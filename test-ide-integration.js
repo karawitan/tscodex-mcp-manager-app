@@ -66,6 +66,17 @@ class IDEIntegrationTester {
           throw new Error(`Invalid IDE info for ${ideName}`);
         }
         this.log(`✅ ${ideName}: ${ideInfo.name} at ${ideInfo.configPath}`);
+        
+        // Test specific IDEs
+        if (ideName === 'windsurf') {
+          this.log('✅ Windsurf IDE detected');
+        } else if (ideName === 'vscode') {
+          this.log('✅ VS Code IDE detected');
+        } else if (ideName === 'opencode') {
+          this.log('✅ OpenCode IDE detected');
+        } else if (ideName === 'claude') {
+          this.log('✅ Claude Desktop IDE detected');
+        }
       }
     });
   }

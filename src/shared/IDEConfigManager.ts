@@ -87,6 +87,24 @@ export class IDEConfigManager {
       };
     }
 
+    // Detect OpenCode
+    const opencodeConfig = path.join(projectRoot, '.opencode', 'mcp.json');
+    if (await this.fileExists(opencodeConfig)) {
+      ides.opencode = {
+        name: 'OpenCode',
+        configPath: opencodeConfig,
+        configType: 'mcp',
+        installed: true,
+      };
+    } else {
+      ides.opencode = {
+        name: 'OpenCode',
+        configPath: opencodeConfig,
+        configType: 'mcp',
+        installed: false,
+      };
+    }
+
     // Detect Claude Desktop
     const claudeConfig = path.join(process.env.HOME || '', 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json');
     if (await this.fileExists(claudeConfig)) {
@@ -96,6 +114,19 @@ export class IDEConfigManager {
         configType: 'claude',
         installed: true,
       };
+    }
+
+    // Detect OpenCode macOS application
+    if (process.platform === 'darwin') {
+      const opencodeAppConfig = path.join(process.env.HOME || '', 'Library', 'Application Support', 'OpenCode', 'User', 'mcp.json');
+      if (await this.fileExists(opencodeAppConfig) && !ides.opencode.installed) {
+        ides.opencode = {
+          name: 'OpenCode',
+          configPath: opencodeAppConfig,
+          configType: 'mcp',
+          installed: true,
+        };
+      }
     }
 
     return ides;
