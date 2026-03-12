@@ -40,6 +40,24 @@ export default defineConfig([
     shims: true,
     treeshake: true,
   },
+  // Shared modules - ESM (for BinaryDetector and other shared utilities)
+  {
+    entry: {
+      'shared/BinaryDetector': 'src/shared/BinaryDetector.ts',
+      'shared/ProxyConfig': 'src/shared/ProxyConfig.ts',
+    },
+    format: ['esm'],
+    target: 'node22',
+    platform: 'node',
+    splitting: false,
+    sourcemap: true,
+    clean: false,
+    dts: false,
+    outDir: 'dist',
+    external: ['electron', 'keytar', 'ws'],
+    shims: true,
+    treeshake: true,
+  },
   // Preload - MUST be CommonJS (Electron sandbox requirement)
   {
     entry: {
