@@ -44,7 +44,7 @@ export default defineConfig([
   {
     entry: {
       'shared/BinaryDetector': 'src/shared/BinaryDetector.ts',
-      'shared/ProxyConfig': 'src/shared/ProxyConfig.ts',
+      'shared/IDEConfigManager': 'src/shared/IDEConfigManager.ts',
     },
     format: ['esm'],
     target: 'node22',
